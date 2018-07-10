@@ -1,0 +1,28 @@
+{
+  "sub_dir": "urbansound8k",
+  "metric_baseline": 0.628606,
+  "framework_type": "random",
+  "num_total": 12500,
+  "hist_sel_mode": "certain",
+  "sel_thresholds": [
+    12500,
+    12500,
+    12500,
+    12500,
+    12500
+  ],
+  "max_round": 1,
+  "num_epochs": 1,
+  "batch_size": 64,
+  "decay_rate": 0.001,
+  "decay_threshold": 0.046,
+  "labeled_percent": 0.1,
+  "learning_rate": 0.0005,
+  "load_pretrained": true,
+  "num_classes": 10,
+  "num_select_per_round": 200,
+  "pre_train": false,
+  "random_seed": 1,
+  "test_percent": 0.2,
+  "valid_percent": 0
+}
