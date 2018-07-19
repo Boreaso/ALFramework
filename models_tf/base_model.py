@@ -1,24 +1,9 @@
 import abc
 
 import tensorflow as tf
+from tensorflow.estimator import ModeKeys
 
-
-class ModeKeys(object):
-    """Standard names for model modes.
-    The following standard keys are defined:
-    * `TRAIN`: training mode.
-    * `TRAIN_CLASSIFIER`: train model without embedding layers.
-    * `FINE_TUNE`: fine tuning model.
-    * `EMBEDDING`: get embeddings without classifier.
-    * `PREDICT`: prediction mode.
-    * `EVAL`: evaluation mode.
-    """
-    TRAIN = 'train'
-    TRAIN_CLASSIFIER = 'train_classifier'
-    FINE_TUNE = 'fine_tune'
-    PREDICT = 'predict'
-    EMBEDDING = 'embedding'
-    EVAL = 'eval'
+from models_tf.dataset import DatasetIterator
 
 
 class BaseModel:
@@ -26,6 +11,7 @@ class BaseModel:
     def __init__(self,
                  iterator,
                  learning_rate,
+                 batch_size,
                  num_classes,
                  embedding_size=128,
                  num_units=100,
@@ -33,17 +19,20 @@ class BaseModel:
                  class_weights=None,
                  init_range=None,
                  init_stddev=1.0,
+                 max_gradients_norm=5,
                  mode=ModeKeys.TRAIN,
                  optimizer='sgd',
                  ckpt_dir=None,
                  num_keep_ckpts=5,
                  random_seed=123):
-        # Data inputs
+        # Hyper parameter
+        assert isinstance(iterator, DatasetIterator)
+        self._iterator = iterator
         self._batched_features = iterator.batched_features
-        self._batched_labels = iterator.batched_labels
+        self._batched_targets = iterator.batched_targets
 
-        # Hyper parameters
-        self._learning_rate = tf.constant(learning_rate)
+        self._learning_rate = learning_rate
+        self._batch_size = batch_size
         self._num_classes = num_classes
         self._embedding_size = embedding_size
         self._num_units = num_units
@@ -51,6 +40,7 @@ class BaseModel:
         self._class_weights = tf.constant(class_weights)
         self._init_range = init_range
         self._init_stddev = init_stddev
+        self._max_gradients_norm = max_gradients_norm
         self._mode = mode
         self._optimizer = optimizer
         self._ckpt_dir = ckpt_dir
@@ -58,68 +48,65 @@ class BaseModel:
         self._random_seed = random_seed
 
         # Build embedding layers
-        self._embeddings = self._build_embedding_layers() \
-            if self._mode != ModeKeys.TRAIN_CLASSIFIER else self._batched_features
+        self._embeddings = self._build_embedding_layers()
+
         # Store all vars in embedding layers
-        self.embedding_vars = [var for var in tf.global_variables()]
+        self._embedding_vars = [var for var in tf.global_variables()]
 
         # Global step
         self._global_step = tf.Variable(0, trainable=False, name='global_step')
 
-        if self._mode != ModeKeys.EMBEDDING:
-            # Add classifier layers
-            result = self._build_classifier(self._embeddings)
+        # Add classifier layers
+        result = self._build_classifier(self._embeddings)
 
-            self._predictions = tf.argmax(self._logits, axis=-1)
-            self.eval_metric_ops = {"Accuracy": tf.metrics.accuracy(
-                labels=self._batched_labels, predictions=self._predictions, name='accuracy')}
+        # Current trainable variables
+        self._variables = tf.trainable_variables()
 
-            # Current trainable variables
-            self._variables = tf.trainable_variables()
+        self._logits = result['logits']
+        self._train_loss = result['loss']
 
-            if self._mode == ModeKeys.TRAIN or self._mode == ModeKeys.TRAIN_CLASSIFIER \
-                    or self._mode == ModeKeys.FINE_TUNE:
-                self._train_loss = result['loss']
-                self._logits = result['logits']
+        if self._mode == ModeKeys.TRAIN:
+            # Optimizer
+            if self._optimizer == "sgd":
+                opt = tf.train.GradientDescentOptimizer(self._learning_rate)
+            elif self._optimizer == 'rmsprop':
+                opt = tf.train.RMSPropOptimizer(self._learning_rate)
+            elif self._optimizer == 'adam':
+                opt = tf.train.AdamOptimizer(self._learning_rate)
+            else:
+                raise ValueError('Invalid `optimizer` value.')
 
-                # Optimizer
-                if self._optimizer == "sgd":
-                    opt = tf.train.GradientDescentOptimizer(self._learning_rate)
-                    tf.summary.scalar("lr", self._learning_rate)
-                elif self._optimizer == 'rmsprop':
-                    opt = tf.train.RMSPropOptimizer(self._learning_rate)
-                else:
-                    opt = tf.train.AdamOptimizer(self._learning_rate)
+            # Gradients
+            self._gradients = tf.gradients(self._train_loss, self._variables)
+            self._clipped_gradients, self._gradients_norm = tf.clip_by_global_norm(
+                self._gradients, self._max_gradients_norm)
 
-                # Gradients
-                self._gradients = tf.gradients(self._train_loss, self._variables)
-                # clipped_grads, grad_norm_summary, grad_norm = model_helper.gradient_clip(
-                #     gradients, max_gradient_norm=self.max_gradient_norm)
-                # self.grad_norm = grad_norm
-                self._update = opt.apply_gradients(
-                    grads_and_vars=zip(self._gradients, self._variables),
-                    global_step=self._global_step)
+            # Update op
+            self._update = opt.apply_gradients(
+                grads_and_vars=zip(self._gradients, self._variables),
+                global_step=self._global_step)
 
-                # self.estimator = self._build_estimator()
+            # # Estimator
+            # self._estimator = self._build_estimator()
 
-                # Summary
-                self._train_summary = tf.summary.merge(
-                    [tf.summary.scalar("lr", self._learning_rate),
-                     tf.summary.scalar("train_loss", self._train_loss)])
-            elif self._mode == ModeKeys.PREDICT:
-                self._logits = result['logits']
+            # Summary
+            self._train_summary = tf.summary.merge(
+                [tf.summary.scalar("lr", self._learning_rate),
+                 tf.summary.scalar("train_loss", self._train_loss),
+                 tf.summary.scalar("grad_norm", self._gradients_norm),
+                 tf.summary.scalar("clipped_gradient", self._gradients_norm)])
 
-            # Print trainable variables
-            print("# Trainable variables")
-            for var in self._variables:
-                print("  %s, %s, %s" % (var.name, str(var.get_shape()),
-                                        var.op.device))
+        # Print trainable variables
+        print("# Trainable variables")
+        for var in self._variables:
+            print("  %s, %s, %s" % (var.name, str(var.get_shape()),
+                                    var.op.device))
 
         # Store all vars in classifier layers
-        self.classifier_vars = [var for var in tf.global_variables() if var not in self.embedding_vars]
+        self._classifier_vars = [var for var in tf.global_variables() if var not in self._embedding_vars]
 
         # Saver
-        self.saver = tf.train.Saver(
+        self._saver = tf.train.Saver(
             tf.global_variables(), allow_empty=True,
             max_to_keep=self._num_keep_ckpts)
 
@@ -127,13 +114,7 @@ class BaseModel:
         return self._mode == ModeKeys.TRAIN
 
     def _get_estimator_mode(self):
-        if self._mode == ModeKeys.TRAIN or self._mode == ModeKeys.TRAIN_CLASSIFIER \
-                or self._mode == ModeKeys.FINE_TUNE:
-            return 'train'
-        elif self._mode == ModeKeys.PREDICT:
-            return 'infer'
-        elif self._mode == ModeKeys.EVAL:
-            return 'eval'
+        return self._mode
 
     @abc.abstractmethod
     def _build_embedding_layers(self):
@@ -145,47 +126,46 @@ class BaseModel:
     @abc.abstractmethod
     def _build_classifier(self, _embeddings=None):
         """Build classifier.
-        :rtype: dict
+        :return dict, keys: 'loss', 'logits'
         """
         pass
 
     # def _build_estimator(self):
     #     predictions = tf.argmax(self._logits)
-    #     eval_metric_ops = {"Accuracy": tf.metrics.accuracy(
-    #         labels=self._batched_labels, predictions=predictions, name='accuracy')}
+    #     eval_metric_ops = {"Loss": self._train_loss,
+    #                        "Accuracy": tf.metrics.accuracy(
+    #                            labels=self._batched_targets,
+    #                            predictions=predictions,
+    #                            name='accuracy')}
     #
     #     model_fn = tf.estimator.EstimatorSpec(
     #         mode=self._get_estimator_mode(),
     #         predictions=predictions,
     #         loss=self._train_loss,
     #         train_op=self._update,
-    #         eval_metric_ops=eval_metric_ops, )
+    #         eval_metric_ops=eval_metric_ops)
     #
     #     estimator = tf.estimator.Estimator(
     #         model_fn=model_fn, model_dir=self._ckpt_dir)
+    #
     #     return estimator
 
-    def _embedding(self, sess):
+    def embedding(self, sess):
         """Extract features with pretrained weights."""
         assert self._mode == ModeKeys.EMBEDDING
         return sess.run(self._embeddings)
 
-    def _train(self, sess):
-        assert self._mode == ModeKeys.TRAIN or \
-               self._mode == ModeKeys.FINE_TUNE or \
-               self._mode == ModeKeys.TRAIN_CLASSIFIER
-        return sess.run(
-            [self._update,
-             self._gradients,
-             self._train_loss,
-             self.eval_metric_ops,
-             self._train_summary,
-             self._global_step,
-             self._learning_rate])
+    def train(self, sess):
+        assert self._mode == ModeKeys.TRAIN
+        return sess.run([
+            self._global_step,
+            self._train_loss,
+            self._train_summary])
 
-    def _predict(self, sess):
+    def predict(self, sess):
         assert self._mode == ModeKeys.PREDICT
-        return sess.run(self._logits)
+        prediction = tf.argmax(self._logits)
+        return sess.run(prediction)
 
     def load_weights(self, sess):
         assert isinstance(sess, tf.Session)
@@ -204,15 +184,3 @@ class BaseModel:
             saver.restore(sess, self._ckpt_dir)
         else:
             raise ValueError("Invalid param 'ckpt_path'")
-
-    def run_step(self, sess):
-        if self._mode == ModeKeys.TRAIN or \
-                self._mode == ModeKeys.FINE_TUNE or \
-                self._mode == ModeKeys.TRAIN_CLASSIFIER:
-            return self._train(sess)
-        elif self._mode == ModeKeys.PREDICT:
-            return self._predict(sess)
-        elif self._mode == ModeKeys.EMBEDDING:
-            return self._embedding(sess)
-        else:
-            raise ValueError('Unknown mode value.')

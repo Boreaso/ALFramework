@@ -20,6 +20,7 @@ from strategies import al_metrics
 from utils import data_utils
 from utils.data_container import DataContainer
 
+# 配置GPU
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.1)
@@ -29,6 +30,11 @@ K.set_session(session)
 
 
 def init_stats(**kwargs):
+    """
+    Init stats DataFrame
+    :param kwargs: extra stats fields.
+    :return: Initialized empty DataFrame obj.
+    """
     if kwargs:
         stats_df = pd.DataFrame(
             data={"round": [], "num_new_labeled": [], "num_pseudo_labeled": [],
@@ -48,13 +54,13 @@ def add_stats(stats_df, al_round, num_total_labeled, eval_res,
               **kwargs):
     """
     Add stats of current round to 'stats_df'.
-    :param stats_df:
-    :param al_round:
-    :param num_new_labeled:
-    :param num_pseudo_labeled:
-    :param num_total_labeled:
+    :param stats_df: 'DataFrame' obj.
+    :param al_round: Current active learning round.
+    :param num_new_labeled: the number of instances labeled this round.
+    :param num_pseudo_labeled: the number of instances pseudo labeled this round.
+    :param num_total_labeled:  the total number of instances labeled this round.
     :param eval_res: loss, accuracy, precision, recall, f1score
-    :param pseudo_acc:
+    :param pseudo_acc: pseudo label accuracy.
     :return:
     """
     assert isinstance(stats_df, pd.DataFrame) and len(eval_res) == 5
@@ -82,6 +88,7 @@ def add_stats(stats_df, al_round, num_total_labeled, eval_res,
 
 
 def load_stats(path):
+    """Load stats DataFrame from .csv file."""
     if path and os.path.exists(path) and os.path.isfile(path):
         stats_df = pd.read_csv(path)
     else:
@@ -91,15 +98,30 @@ def load_stats(path):
 
 
 def save_stats(path, stats_df):
+    """Save stats DataFrame to .csv file."""
     utils.ensure_path_exist(path)
     stats_df.to_csv(path, index=False)
 
 
 class Framework:
+    """Base framework class."""
 
     def __init__(self, data_container, model, test_features, test_labels,
                  stats_path=None, num_select_per_round=200, rounds_per_stats=1,
                  max_round=50, pre_train=True, using_hist=True, **al_args):
+        """
+        :param data_container: DataContainer object.
+        :param model: model object.
+        :param test_features: test features.
+        :param test_labels: test labels.
+        :param stats_path: path to save stats.
+        :param num_select_per_round: number of instances to select in current round.
+        :param rounds_per_stats: stats saved after every `rounds_per_stats` rounds.
+        :param max_round: max active learning round.
+        :param pre_train: whether to load pretrained model.
+        :param using_hist: whether to select subset of historical labeled samples.
+        :param al_args: extra params.
+        """
         self.data_container = data_container
         self.model = model
         self.test_features = test_features
@@ -151,6 +173,11 @@ class Framework:
             # logger.info('Eval result: %s' % eval_res)
 
     def _train_and_eval(self, train=True, eval=True):
+        """
+        Do train and evaluation.
+        :param train: whether to train or not.
+        :param eval: whether to evaluate or not.
+        """
         if train:
             self.model.train(self.data_container.labeled_features,
                              self.data_container.labeled_labels,
@@ -199,6 +226,7 @@ class Framework:
         return cur_train_features, cur_train_labels
 
     def run(self):
+        """Main process of active learning framework."""
         logger.info('# Running active learning process.')
         start_time = time.time()
 
@@ -260,6 +288,7 @@ class Framework:
 
 
 class EntropyFramework(Framework):
+    """Using `max entropy` strategy(No pseudo label process)."""
 
     def __init__(self, data_container, model, test_features, test_labels,
                  stats_path=None, num_select_per_round=200, rounds_per_stats=1,
@@ -290,6 +319,7 @@ class EntropyFramework(Framework):
 
 
 class EntropyPLFramework(Framework):
+    """Using `max entropy` strategy(With pseudo label process)."""
 
     def __init__(self, data_container, model, test_features, test_labels,
                  stats_path=None, num_select_per_round=200, rounds_per_stats=1,
@@ -307,7 +337,7 @@ class EntropyPLFramework(Framework):
                            new_labeled_indices,
                            pseudo_labeled_indices=None,
                            pseudo_labels=None):
-        # 加入伪标记
+        # Add pseudo labeled samples.
         if self.using_hist:
             cur_train_features, cur_train_labels = self.data_container.labeled_features, \
                                                    self.data_container.labeled_labels
@@ -348,6 +378,7 @@ class EntropyPLFramework(Framework):
 
 
 class EGLFramework(Framework):
+    """Using `expected gradient length` strategy."""
 
     def active_select(self):
         # Active selection.
@@ -360,6 +391,7 @@ class EGLFramework(Framework):
 
 
 class DPCFramework(Framework):
+    """Using `Density peaks cluster(DPC)` strategy."""
 
     def active_select(self):
         # Active selection.
@@ -372,6 +404,8 @@ class DPCFramework(Framework):
 
 
 class EDPCFramework(Framework):
+    """Using `DPC` and `Entropy` fusion strategy."""
+
     SEL_HIST_THRESHOLD = 3000
 
     def __init__(self, data_container, model, test_features, test_labels,
@@ -430,6 +464,7 @@ class EDPCFramework(Framework):
 
 
 class RandomFramework(Framework):
+    """Using `Random` strategy."""
 
     def active_select(self):
         # Active selection.
@@ -441,6 +476,8 @@ class RandomFramework(Framework):
 
 
 def prepare_for_next_iteration(init_model_path, cur_work_space):
+    """Do data clean and file copy."""
+
     assert os.path.exists(init_model_path) and os.path.isfile(init_model_path)
 
     if not os.path.exists(cur_work_space):
@@ -563,9 +600,6 @@ if __name__ == '__main__':
             num_epochs=flags.num_epochs, load_pretrained=flags.load_pretrained, feature_type='raw',
             output_dir='outputs/%s' % _sub_dir,
             model_dir='%s/ckpt' % cur_work_space)
-
-        # _keras_model.train(_train_features, _train_labels,
-        #                    _test_features, _test_labels)
 
         if flags.framework_type == 'entropy' or \
                 flags.framework_type == 'edpc' or \
