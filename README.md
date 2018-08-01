@@ -49,4 +49,4 @@
 ## 结果
 通过对增量训练过程中各个主动学习策略进行性能对比，结果如下：
  
-![运行结果](https://github.com/Boreaso/ALFramework/raw/master/images/strategy_result.png)
+![运行结果](https://github.com/Boreaso/ALFramework/raw/master/images/strategies_result.png)
