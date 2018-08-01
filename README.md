@@ -41,7 +41,7 @@
 
 ## 使用
 把设置号的配置文件置于params目录下，进入项目顶级目录执行如下代码开始迭代训练过程：
-python framework.py --param_file='params/***.json' 
+        python framework.py --param_file='params/***.json' 
 
 ## 结果
 通过对增量训练过程中各个主动学习策略进行性能对比，结果如下：
