@@ -42,7 +42,7 @@
     }
 
 ## 使用
-把设置号的配置文件置于params目录下，进入项目顶级目录执行如下代码开始迭代训练过程：
+把设置好的配置文件置于params目录下，进入项目顶级目录执行如下代码开始迭代训练过程：
 
     python framework.py --param_file='params/***.json' 
 
